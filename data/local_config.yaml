@@ -1,0 +1,17 @@
+api:
+  base_url: "http://localhost:8000"
+  timeout: 30
+  retries: 3
+  verify_ssl: false
+
+ui:
+  browser: "chromium"
+  headless: false
+  slow_mo: 500
+  viewport_width: 1920
+  viewport_height: 1080
+
+performance:
+  users: 5
+  spawn_rate: 1
+  run_time: "2m"

@@ -1,0 +1,17 @@
+api:
+  base_url: "https://staging-api.example.com"
+  timeout: 45
+  retries: 5
+  verify_ssl: true
+
+ui:
+  browser: "chromium"
+  headless: true
+  slow_mo: 0
+  viewport_width: 1920
+  viewport_height: 1080
+
+performance:
+  users: 20
+  spawn_rate: 4
+  run_time: "10m"

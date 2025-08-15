@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - TEST_ENV=${TEST_ENV:-local}
+      - UI_HEADLESS=${UI_HEADLESS:-true}
+      - API_BASE_URL=${API_BASE_URL:-https://api.example.com}
+      - TEST_USERNAME=${TEST_USERNAME}
+      - TEST_PASSWORD=${TEST_PASSWORD}
+    volumes:
+      - ../reports:/app/reports
+      - ../screenshots:/app/screenshots
+      - ../logs:/app/logs
+    command: pytest -v -m "${TEST_MARKER:-smoke}" --html=reports/html/docker_report.html --self-contained-html
+
+  api-load-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - API_BASE_URL=${API_BASE_URL:-https://api.example.com}
+      - TEST_USERNAME=${TEST_USERNAME}
+      - TEST_PASSWORD=${TEST_PASSWORD}
+    volumes:
+      - ../reports:/app/reports
+    command: locust -f performance/load_tests/api_load_test.py --headless -u 10 -r 2 -t 300s --host=${API_BASE_URL} --html reports/performance/docker_load_test.html
+    profiles:
+      - performance
