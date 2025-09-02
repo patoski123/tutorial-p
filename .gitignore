@@ -1,4 +1,52 @@
-.idea
-reports
-logs
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Caches & tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Benchmarks
+.benchmarks/
+.benchmark/
+
+# Editors / OS
+.vscode/
+.idea/
 .DS_Store
+.qodo
+
+# Test artifacts & reports
+reports/
+reports/logs
+!reports/.gitkeep
+playwright-report/
+test-results/
+blob-report/
+trace.zip
+
+# Allure default (in case someone runs without pytest.ini)
+allure-results/
+allure-report/

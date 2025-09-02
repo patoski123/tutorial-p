@@ -1,0 +1,106 @@
+{
+  "dev": {
+    "base_url": "http://localhost:3000",
+    "api_base_url": "http://localhost:8000",
+    "database_url": "postgresql://dev-db:5432/testdb",
+    "timeout": 30,
+    "retries": 3,
+    "parallel_workers": 2,
+    "browser_slowmo": 1000,
+    "record_video": true,
+    "mobile_config": {
+      "android_device": "emulator-5554",
+      "ios_device": "iPhone 14 Simulator"
+    },
+    "performance_config": {
+      "users": 5,
+      "spawn_rate": 1,
+      "run_time": "30s"
+    }
+  },
+  "test": {
+    "base_url": "https://test.example.com",
+    "api_base_url": "https://api-test.example.com",
+    "database_url": "postgresql://test-db:5432/testdb",
+    "test_username": "test_user",
+    "test_password": "test_pass",
+    "timeout": 60,
+    "retries": 2,
+    "parallel_workers": 4,
+    "browser_slowmo": 500,
+    "record_video": false,
+    "mobile_config": {
+      "android_device": "Pixel_6_API_33",
+      "ios_device": "iPhone 14"
+    },
+    "performance_config": {
+      "users": 20,
+      "spawn_rate": 4,
+      "run_time": "60s"
+    }
+  },
+  "staging": {
+    "base_url": "https://staging.example.com",
+    "api_base_url": "https://api-staging.example.com",
+    "database_url": "postgresql://staging-db:5432/testdb",
+    "test_username": "staging_user",
+    "test_password": "staging_pass",
+    "timeout": 45,
+    "retries": 3,
+    "parallel_workers": 6,
+    "browser_slowmo": 300,
+    "record_video": false,
+    "mobile_config": {
+      "android_device": "Samsung_Galaxy_S23",
+      "ios_device": "iPhone 14 Pro"
+    },
+    "performance_config": {
+      "users": 50,
+      "spawn_rate": 10,
+      "run_time": "120s"
+    }
+  },
+  "preprod": {
+    "base_url": "https://preprod.example.com",
+    "api_base_url": "https://api-preprod.example.com",
+    "database_url": "postgresql://preprod-db:5432/testdb",
+    "test_username": "preprod_user",
+    "test_password": "preprod_pass",
+    "timeout": 60,
+    "retries": 2,
+    "parallel_workers": 8,
+    "browser_slowmo": 0,
+    "record_video": false,
+    "mobile_config": {
+      "android_device": "Pixel_7_API_34",
+      "ios_device": "iPhone 15"
+    },
+    "performance_config": {
+      "users": 100,
+      "spawn_rate": 20,
+      "run_time": "300s"
+    }
+  },
+  "prod": {
+    "base_url": "https://example.com",
+    "api_base_url": "https://api.example.com",
+    "database_url": "postgresql://prod-db:5432/testdb",
+    "test_username": "prod_user",
+    "test_password": "prod_pass",
+    "timeout": 30,
+    "retries": 1,
+    "parallel_workers": 10,
+    "browser_slowmo": 0,
+    "record_video": false,
+    "run_smoke_only": true,
+    "mobile_config": {
+      "android_device": "real_device_prod",
+      "ios_device": "real_device_prod"
+    },
+    "performance_config": {
+      "users": 200,
+      "spawn_rate": 50,
+      "run_time": "600s"
+    }
+  }
+}

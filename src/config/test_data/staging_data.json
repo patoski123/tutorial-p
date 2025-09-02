@@ -1,0 +1,12 @@
+{
+  "users": [
+    {"username": "stg_admin", "password": "stagingpass", "role": "admin"},
+    {"username": "stg_user", "password": "stagingpass", "role": "user"}
+  ],
+  "products": [
+    {"id": "stg-prod-1", "name": "Staging Product 1", "price": 15.99}
+  ],
+  "api_keys": {
+    "external_service": "staging-api-key-456"
+  }
+}
