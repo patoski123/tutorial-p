@@ -1,6 +1,6 @@
 from playwright.sync_api import Page
 from abc import ABC, abstractmethod
-from utils.logger import get_logger
+from src.utils.logger import get_logger
 
 
 logger = get_logger(__name__)

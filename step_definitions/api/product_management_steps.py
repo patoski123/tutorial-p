@@ -1,6 +1,6 @@
 from pytest_bdd import given, when, then, parsers
 from playwright.sync_api import APIRequestContext
-from utils.logger import get_logger
+from src.utils.logger import get_logger
 # scenarios('../../features/api/product_management/product_management_api.feature')
 
 logger = get_logger(__name__)

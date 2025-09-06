@@ -221,12 +221,6 @@ pytest --env=preprod -m "prod_safe" -n 8 --headless
 # Production - Smoke tests only
 pytest --env=prod -m "prod_safe and smoke" -n 10 --headless
 
-# Run all environments sequentially
-for env in dev test staging preprod; do
-  echo "Running tests in $env environment..."
-  pytest --env=$env -m smoke --headless -n 4
-done
-
 # Docker multi-environment execution
 docker-compose -f docker-compose.multi-env.yml up test-dev test-staging
 
@@ -262,11 +256,6 @@ allure serve reports/allure-results
 
 allure generate reports/allure-results -o reports/allure-report --clean
 
-# 0) prerequisites
-# - Python 3.11+ (3.13 OK)
-# - (optional) Allure CLI if you want to serve reports locally
-
-# 1) clone
 git clone <your-repo-url>
 cd python_playwright
 

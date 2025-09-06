@@ -1,8 +1,8 @@
 import subprocess
 import time
 from pathlib import Path
-from config.settings import Settings
-from utils.logger import get_logger
+from src.config.settings import Settings
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

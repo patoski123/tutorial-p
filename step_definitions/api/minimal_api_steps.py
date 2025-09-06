@@ -1,16 +1,11 @@
 from typing import Any, Dict
 import pytest
 from pytest_bdd import given, when, then, parsers
-from src.api.clients.product_management_api import ProductManagementAPI
+from src.api.wrappers.product_management_api import ProductManagementAPI
 
 @pytest.fixture
 def ctx() -> Dict[str, Any]:
     return {}
-
-@given("the API is available")
-def api_available():
-    # Just a placeholder for now
-    pass
 
 @when(parsers.parse('I create a product named "{name}" via the API'))
 def create_product(name: str, settings, pw_api, api_recorder, ctx):
@@ -28,3 +23,8 @@ def create_product(name: str, settings, pw_api, api_recorder, ctx):
 def api_returns_product(ctx, name: str):
     assert ctx["status"] == 201
     assert ctx["product"]["name"] == name
+
+@given("the API is available")
+def api_available():
+    # Just a placeholder for now
+    pass

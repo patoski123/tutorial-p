@@ -4,6 +4,26 @@ from pathlib import Path
 from typing import Dict, Any, List
 import time
 from functools import wraps
+from dataclasses import dataclass, field
+
+@dataclass
+class TestContext:
+    data: Dict[str, Any] = field(default_factory=dict)
+    def set(self, key: str, value: Any): self.data[key] = value
+    def get(self, key: str, default: Any = None): return self.data.get(key, default)
+    def clear(self): self.data.clear()
+
+# # to go in conftest.py file
+# import pytest
+# from src.utils.helpers.context import TestContext
+
+# @pytest.fixture
+# def ctx() -> TestContext:
+#     return TestContext()    
+
+# usage in step definition
+# def have_username(ctx: TestContext, username: str):
+#     ctx.set("username", username)
 
 
 def retry(times: int = 3, delay: float = 1.0):
@@ -63,27 +83,27 @@ def wait_for_condition(condition_func, timeout: int = 30, poll_interval: float =
     return False
 
 
-class TestContext:
-    """Shared test context for storing data between steps"""
-    _instance = None
-    _data = {}
+# class TestContext:
+#     """Shared test context for storing data between steps"""
+#     _instance = None
+#     _data = {}
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(TestContext, cls).__new__(cls)
-        return cls._instance
+#     def __new__(cls):
+#         if cls._instance is None:
+#             cls._instance = super(TestContext, cls).__new__(cls)
+#         return cls._instance
 
-    def set(self, key: str, value: Any):
-        """Set value in context"""
-        self._data[key] = value
+#     def set(self, key: str, value: Any):
+#         """Set value in context"""
+#         self._data[key] = value
 
-    def get(self, key: str, default: Any = None):
-        """Get value from context"""
-        return self._data.get(key, default)
+#     def get(self, key: str, default: Any = None):
+#         """Get value from context"""
+#         return self._data.get(key, default)
 
-    def clear(self):
-        """Clear all context data"""
-        self._data.clear()
+#     def clear(self):
+#         """Clear all context data"""
+#         self._data.clear()
 
 
 def take_screenshot_on_failure(page, test_name: str):

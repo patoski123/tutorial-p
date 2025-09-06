@@ -1,7 +1,7 @@
 import pytest
 from pytest_bdd import given, when, then, parsers
-from src.api.clients.auth_api import AuthAPI
-from src.api.clients.user_api import UserAPI
+from src.api.wrappers.auth_api import AuthAPI
+from src.api.wrappers.user_api import UserAPI
 from src.pages.login_page import LoginPage
 import structlog
 

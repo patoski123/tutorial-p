@@ -1,8 +1,8 @@
 from pytest_bdd import given, when, then, parsers
 from playwright.sync_api import Page, expect
-from pages.login_page import LoginPage
-from pages.dashboard_page import DashboardPage
-from utils.logger import get_logger
+from src.pages.login_page import LoginPage
+from src.pages.dashboard_page import DashboardPage
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

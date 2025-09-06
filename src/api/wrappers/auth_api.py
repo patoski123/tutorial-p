@@ -1,5 +1,5 @@
 # src/api/clients/auth_api.py
-from .base_api import BaseAPI
+from ..base.base_api import BaseAPI
 
 class AuthAPI(BaseAPI):
     def login(self, ctx, username: str, password: str):

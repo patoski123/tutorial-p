@@ -2,7 +2,7 @@ from typing import Any, Dict
 import pytest
 from pytest_bdd import when, then
 # assuming you already have src/api/clients/auth_api.py with .login(...)->(status, data)
-from src.api.clients.auth_api import AuthAPI
+from src.api.wrappers.auth_api import AuthAPI
 
 @pytest.fixture
 def ctx() -> Dict[str, Any]:

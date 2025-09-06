@@ -1,6 +1,6 @@
-from src.api.clients.base_api import BaseAPI
+from src.api.base.base_api import BaseAPI
 from typing import Dict, Any
-from utils.data_factory import DataFactory
+from src.utils.data_factory import DataFactory
 
 class UserAPI(BaseAPI):
     """User management API wrapper"""

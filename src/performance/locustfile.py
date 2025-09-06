@@ -1,7 +1,7 @@
 from locust import HttpUser, task, between
 import json
 import random
-from config.settings import Settings
+from src.config.settings import Settings
 
 settings = Settings()
 

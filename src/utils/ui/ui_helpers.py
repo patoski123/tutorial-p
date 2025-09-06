@@ -1,5 +1,5 @@
-from playwright.sync_api import Page, expect
-from typing import Dict, Any, List
+from playwright.sync_api import Page
+from typing import Dict
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)

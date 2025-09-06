@@ -1,6 +1,6 @@
 from pytest_bdd import given, when, then, parsers
 import pytest
-from config.settings import Settings
+from src.config.settings import Settings
 
 
 @given("I am in the development environment")

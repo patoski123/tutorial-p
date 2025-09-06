@@ -1,5 +1,6 @@
 # src/api/execution/executor.py
 # The single place that performs HTTP (Playwright / requests / mock) 
+# by calling any of the API Clients (api, requests.Session) from the conftest file 
 # and records to Allure + your trace via ApiRecorder.
 
 from __future__ import annotations

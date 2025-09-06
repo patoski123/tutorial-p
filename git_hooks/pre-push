@@ -1,0 +1,10 @@
+# hooks/pre-push (tracked in git)
+#!/bin/bash
+echo "🔍 Checking for duplicate BDD step definitions..."
+python scripts/check_duplicates.py
+exit_code=$?
+if [ $exit_code -ne 0 ]; then
+    echo "❌ Push rejected due to duplicate step definitions"
+    exit 1
+fi
+echo "✅ Duplicate check passed"

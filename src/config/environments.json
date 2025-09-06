@@ -1,7 +1,7 @@
 {
   "dev": {
-    "base_url": "https://dev.example.com",
-    "api_base_url": "https://api-dev.example.com",
+    "base_url": "http://localhost:3000",
+    "api_base_url": "http://localhost:8000",
     "database_url": "postgresql://dev-db:5432/testdb",
     "test_username": "dev_user",
     "test_password": "dev_pass",

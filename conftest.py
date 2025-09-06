@@ -1,29 +1,16 @@
 import pathlib
 import sys
-import pkgutil
-import importlib
-import importlib.util
-import shutil
 import os, inspect
-from typing import Optional, Dict, Any
 from pathlib import Path
-import pytest
 import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import json, base64
 from pathlib import Path
-from typing import Generator, Dict, Any
+from typing import Generator, Dict, Any, Optional, Callable, List, Set
 import pytest
-from playwright.sync_api import (
-    Playwright,
-    Browser,
-    BrowserType,
-    BrowserContext,
-    Page,
-    APIRequestContext,
-)
-from pytest import FixtureRequest
+from playwright.sync_api import (Playwright, BrowserType, Browser, BrowserContext, Page, APIRequestContext)
+
 # Appium imports can be optional if not always installed
 try:
     from appium import webdriver as appium_driver
@@ -34,22 +21,19 @@ except Exception:
     UiAutomator2Options = None
     XCUITestOptions = None
 
-from config.settings import Settings
-from utils.logger import get_logger
-from utils.api.api_reporting import ApiRecorder
+from src.config.settings import Settings
+from src.utils.logger import get_logger
+from src.utils.api.api_reporting import ApiRecorder
 from src.api.execution.executor import make_api_executor
-from src.api.clients.auth_api import AuthAPI
 logger = get_logger(__name__)
 
 ROOT = pathlib.Path(__file__).parent.resolve()
 SRC = ROOT / "src"
 STEPS_DIR = ROOT / "step_definitions"
 
-# ensure root and src on sys.path once
-for p in (ROOT, SRC):
-    p_str = str(p)
-    if p_str not in sys.path:
-        sys.path.insert(0, p_str)
+# Only add ROOT to sys.path - forces explicit src.utils imports
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 def _discover_step_modules():
     mods = []
@@ -70,6 +54,8 @@ def pytest_addoption(parser):
     parser.addoption("--browser-path", action="store", default=None, help="Absolute path to a custom browser executable")
     parser.addoption("--mobile-platform", action="store", default="android", choices=["android", "ios"], help="Mobile platform")
     parser.addoption("--user-role", action="store", default="user", help="Test user role (e.g. user, admin)")
+    parser.addoption("--api-worker-html", action="store_true", default=False, help="Also write per-worker HTML under reports/workers/")
+    parser.addoption("--api-clean-workers", action="store_true", default=False, help="Delete reports/workers/* after combining")
 
 # --- Settings / environment ---
 @pytest.fixture(scope="session")
@@ -79,181 +65,206 @@ def settings(request) -> Settings:
     os.environ["TEST_ENV"] = env
     return Settings(environment=env)
 
-# --- Playwright browser/context/page ---
-# --- centralised Custom launcher that supports --browser-path but DOES NOT conflict with plugin fixtures ---
-@pytest.fixture(scope="session")
-def browser_context_args(settings) -> Dict[str, Any]:
-    """Browser context configuration."""
-    args: Dict[str, Any] = {
-        "viewport": {"width": 1920, "height": 1080},
-        "ignore_https_errors": True,
-        "base_url": settings.base_url,
-    }
-    if getattr(settings, "record_video", False):
-        args.update({
-            "record_video_dir": "reports/videos/",
-            "record_video_size": {"width": 1920, "height": 1080},
-        })
-    return args
+# -------------------------
+# Browser / Context / Page
+# -------------------------
 
 @pytest.fixture(scope="session")
- # BrowserType from pytest-playwright 
-# 2) Custom launcher that won’t collide with plugin fixtures
-def custom_browser(browser_type: BrowserType, request: FixtureRequest) -> Generator[Browser, None, None]:
+def browser(browser_type: BrowserType, request: pytest.FixtureRequest) -> Generator[Browser, None, None]:
     headed = bool(request.config.getoption("--headed"))
     slowmo_opt = request.config.getoption("--slowmo")
     slowmo = int(slowmo_opt) if slowmo_opt else 0
-    channel = request.config.getoption("--browser-channel")
-    custom_executable = request.config.getoption("--browser-path")
-
-    if channel and custom_executable:
-        raise RuntimeError("Use either --browser-channel OR --browser-path, not both.")
-
-    # Chromium-only guard
-    if (channel or custom_executable) and browser_type.name != "chromium":
-        which = "--browser-path" if custom_executable else "--browser-channel"
-        raise RuntimeError(f"{which} is only supported with --browser=chromium.")
 
     launch_kwargs: Dict[str, Any] = {
         "headless": not headed,
         "slow_mo": slowmo,
     }
-
-    # Pick one: path > channel > bundled
-    if custom_executable:
-        if not os.path.exists(custom_executable):
-            raise FileNotFoundError(f"Custom browser executable not found: {custom_executable}")
-        launch_kwargs["executable_path"] = custom_executable
-        print(f"[browser] Using custom executable: {custom_executable}")
-    elif channel:
-        launch_kwargs["channel"] = channel
-        print(f"[browser] Using channel: {channel}")
-
-    browser = browser_type.launch(**launch_kwargs)
+    print(f"[browser] Using Playwright {browser_type.name} (headless={not headed}, slow_mo={slowmo}ms)")
+    b = browser_type.launch(**launch_kwargs)
     try:
-        yield browser
+        yield b
     finally:
-        browser.close()
+        b.close()
+
+@pytest.fixture
+def context(browser: Browser, browser_context_args: Dict[str, Any]) -> Generator[BrowserContext, None, None]:
+    """
+    Default: function-scoped for test isolation and parallel safety.
+    One fresh context per test, but we reuse the same Browser (fast).
+    """
+    ctx = browser.new_context(**browser_context_args)
+    try:
+        yield ctx
+    finally:
+        ctx.close()
 
 @pytest.fixture(scope="session")
-def ui_context(custom_browser: Browser,browser_context_args: Dict[str, Any],) -> Generator[BrowserContext, None, None]:
-    ctx = custom_browser.new_context(**browser_context_args)
+def shared_context(browser: Browser, browser_context_args: Dict[str, Any]) -> Generator[BrowserContext, None, None]:
+    """
+    Optional: session-scoped context for speed or state persistence across tests in the SAME worker.
+    Use with care when running in parallel; prefer isolated 'context' unless you truly need persistence.
+    """
+    ctx = browser.new_context(**browser_context_args)
     try:
         yield ctx
     finally:
         ctx.close()
 
 @pytest.fixture
-def ui_page(ui_context: BrowserContext) -> Generator[Page, None, None]:
-    page = ui_context.new_page()
+def page(context: BrowserContext) -> Generator[Page, None, None]:
+    p = context.new_page()
     try:
-        yield page
+        yield p
     finally:
-        page.close()
+        p.close()
 
 @pytest.fixture
-def ui_api_client(playwright: Playwright, ui_context: BrowserContext, settings) -> Generator[APIRequestContext, None, None]:
-    """API client that shares auth with the UI context (for E2E)."""
-    storage = ui_context.storage_state()
-    ctx = playwright.request.new_context(
-        base_url=settings.api_base_url,
-        storage_state=storage,
-        extra_http_headers={"Content-Type": "application/json", "Accept": "application/json"},
-        ignore_https_errors=True,
-        timeout=settings.timeout * 1000,
-    )
+def shared_page(shared_context: BrowserContext) -> Generator[Page, None, None]:
+    """
+    Page tied to the shared_context; cookies/localStorage persist across tests in a worker.
+    Still one page per test to avoid tab interference.
+    """
+    p = shared_context.new_page()
     try:
-        yield ctx
+        yield p
     finally:
-        ctx.dispose()
+        p.close()
+
+# -------------------------
+# Token helpers
+# -------------------------
+
+def _bearer_from_local_storage(storage_state: Dict[str, Any], token_keys: Optional[Set[str]] = None) -> Optional[str]:
+    token_keys = token_keys or {"access_token", "id_token", "jwt", "authToken"}
+    for origin in storage_state.get("origins", []):
+        for item in origin.get("localStorage", []):
+            if item.get("name") in token_keys:
+                return item.get("value")
+    return None
+
+def _bearer_from_page_storage(page: Page, token_keys: Optional[Set[str]] = None) -> Optional[str]:
+    """
+    Try sessionStorage first (common for SPAs), then fallback to localStorage.
+    Requires the page to be on the correct origin (post-login).
+    """
+    token_keys = token_keys or {"access_token", "id_token", "jwt", "authToken"}
+    for key in token_keys:
+        token = page.evaluate(f"sessionStorage.getItem('{key}')")
+        if token:
+            return token
+    for key in token_keys:
+        token = page.evaluate(f"localStorage.getItem('{key}')")
+        if token:
+            return token
+    return None
+
+def _merge_dict(a: Dict[str, str], b: Optional[Dict[str, str]]) -> Dict[str, str]:
+    return {**a, **(b or {})}
+
+# -------------------------
+# One factory to rule them all
+# -------------------------
 
 @pytest.fixture
-def pw_api(playwright: Playwright, settings) -> Generator[APIRequestContext, None, None]:
-    """Standalone Playwright API client (no browser required)."""
-    ctx = playwright.request.new_context(
-        base_url=settings.api_base_url,
-        extra_http_headers={"Content-Type": "application/json", "Accept": "application/json"},
-        ignore_https_errors=True,
-        timeout=settings.timeout * 1000,
-    )
+def api_client_factory(
+    playwright: Playwright,
+    context: BrowserContext,      # default source for shared state (function-scoped)
+    settings,                      # settings fixture (api_base_url, timeout, etc.)
+) -> Generator[Callable[..., APIRequestContext], None, None]:
+    """
+    Create API clients on demand.
+
+    Usage:
+      # Pure API:
+      api = api_client_factory(shared=False)
+
+      # Share current UI state (cookies + optional Authorization from storage):
+      api = api_client_factory(shared=True)                    # uses default 'context'
+      api = api_client_factory(shared=True, source_context=shared_context)  # use shared_context
+
+      # If token lives in sessionStorage, pass a post-login page:
+      api = api_client_factory(shared=True, from_page=page)
+
+      # Per-client overrides:
+      api = api_client_factory(shared=True,
+                               extra_headers={"X-Env": "dev"},
+                               base_url="https://alt-api.example.com",
+                               timeout_ms=30_000)
+    """
+    created: List[APIRequestContext] = []
+
+    def factory(
+        *,
+        shared: bool = False,
+        source_context: Optional[BrowserContext] = None,
+        from_page: Optional[Page] = None,
+        base_url: Optional[str] = None,
+        timeout_ms: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        token_keys: Optional[Set[str]] = None,
+        ignore_https_errors: bool = True,
+    ) -> APIRequestContext:
+        base = base_url or settings.api_base_url
+        to = timeout_ms if timeout_ms is not None else settings.timeout * 1000
+
+        # Keep default headers minimal. Do NOT set Content-Type globally.
+        headers: Dict[str, str] = {"Accept": "application/json"}
+
+        storage_state: Optional[Dict[str, Any]] = None
+        if shared:
+            src_ctx = source_context or context   # default: function-scoped context
+            storage_state = src_ctx.storage_state()  # cookies + localStorage (NOT sessionStorage)
+
+            # Try to add Authorization if we can discover a token.
+            token = None
+            if from_page is not None:
+                token = _bearer_from_page_storage(from_page, token_keys)
+            if not token:
+                token = _bearer_from_local_storage(storage_state, token_keys)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+        api_ctx = playwright.request.new_context(
+            base_url=base,
+            storage_state=storage_state,                 # shares cookies if domains align
+            extra_http_headers=_merge_dict(headers, extra_headers),
+            ignore_https_errors=ignore_https_errors,
+            timeout=to,
+        )
+        created.append(api_ctx)
+        return api_ctx
+
     try:
-        yield ctx
+        yield factory
     finally:
-        ctx.dispose()
+        for c in created:
+            c.dispose()
 
-# # --- Playwright browser/context/page ---
-# def browser(playwright, browser_type, request):
-#     headed = request.config.getoption("--headed")
-#     slowmo = int(request.config.getoption("--slowmo") or 0)
-#     exe = request.config.getoption("--browser-path")
+# -------------------------
+# Convenience fixtures
+# -------------------------
 
-#     launch_kwargs = {"headless": not headed, "slow_mo": slowmo}
-#     if exe:
-#         launch_kwargs["executable_path"] = exe  # custom Chrome/Chromium
+@pytest.fixture
+def api(api_client_factory) -> APIRequestContext:
+    """
+    Pure API client (no browser state).
+    """
+    return api_client_factory(shared=False)
 
-#     b = browser_type.launch(**launch_kwargs)
-#     yield b
-#     b.close()
+@pytest.fixture
+def api_shared(api_client_factory) -> Callable[..., APIRequestContext]:
+    """
+    Returns a callable so the test can create a shared-state API client at the right moment
+    (e.g., AFTER UI login). You can pass 'from_page=page' to read sessionStorage tokens.
+    """
+    return lambda **kwargs: api_client_factory(shared=True, **kwargs)
 
-# @pytest.fixture(scope="session")
-# def browser_context_args(settings):
-#     """Only context-supported keys here (no slow_mo)."""
-#     args = {
-#         "viewport": {"width": 1920, "height": 1080},
-#         "ignore_https_errors": True,
-#         "base_url": settings.base_url,
-#     }
-#     # Optional video recording
-#     if getattr(settings, "record_video", False):
-#         args["record_video_dir"] = "reports/videos/"
-#         args["record_video_size"] = {"width": 1920, "height": 1080}
-#     return args
-
-# @pytest.fixture(scope="session")
-# def browser_context(browser: Browser, browser_context_args) -> BrowserContext:
-#     ctx = browser.new_context(**browser_context_args)
-#     yield ctx
-#     ctx.close()
-
-# @pytest.fixture
-# def page(browser_context: BrowserContext):
-#     p = browser_context.new_page()
-#     yield p
-#     p.close()
-
-# @pytest.fixture
-# def ui_api_client(playwright: Playwright, browser_context: BrowserContext, settings):
-#     """Playwright API client that shares auth/cookies with the UI context (E2E)."""
-#     storage = browser_context.storage_state()  # dict
-#     api_ctx = playwright.request.new_context(
-#         base_url=settings.api_base_url,
-#         storage_state=storage,
-#         extra_http_headers={"Content-Type": "application/json", "Accept": "application/json"},
-#         ignore_https_errors=True,
-#         timeout=settings.timeout * 1000
-#     )
-#     yield api_ctx
-#     api_ctx.dispose()
-
-# @pytest.fixture
-# def pw_api(playwright: Playwright, settings):
-#     """Standalone Playwright API client (no browser required)."""
-#     ctx = playwright.request.new_context(
-#         base_url=settings.api_base_url,
-#         extra_http_headers={"Content-Type": "application/json", "Accept": "application/json"},
-#         ignore_https_errors=True,
-#         timeout=settings.timeout * 1000,
-#     )
-#     try:
-#         yield ctx
-#     finally:
-#         ctx.dispose()
 
 @pytest.fixture
 def rq(settings):
     """ If you also want requests for API and not playwright for API Testing"""
     s = requests.Session()
-    s.headers.update({"Accept": "application/json", "Content-Type": "application/json"})
+    s.headers.update({"Accept": "application/json"})
     s.base_url = settings.api_base_url  # just a hint; build URLs as f"{s.base_url}/path"
     try:
         yield s
@@ -452,28 +463,6 @@ def pytest_runtest_makereport(item, call):
     except Exception:
         pass
 
-# def pytest_runtest_makereport(item, call):
-#     # Execute all other hooks to obtain the report object
-#     outcome = yield
-#     report = outcome.get_result()
-
-#     # Only care about test phase failures
-#     if report.when == "call" and report.failed:
-#         screenshot = _try_capture_page_screenshot(item._request)
-#         if screenshot:
-#             # Attach to pytest-html / allure if present
-#             try:
-#                 import pytest_html
-#                 if hasattr(report, "extra"):
-#                     report.extra.append(pytest_html.extras.png(screenshot, mime_type="image/png"))
-#             except Exception:
-#                 pass
-#             try:
-#                 import allure
-#                 allure.attach(screenshot, name="failure-screenshot", attachment_type=allure.attachment_type.PNG)
-#             except Exception:
-#                 pass
-
 # --- Optional: BDD lifecycle logging (safe, minimal signatures) ---
 def pytest_bdd_before_scenario(request, feature, scenario):
     logger.info(f"Starting scenario: {scenario.name}")
@@ -514,7 +503,6 @@ def mobile_driver(request, settings):
     driver.quit()
 
 # --- API Trace logger (HTML/JSON report, optional PDF) ---
-
 @dataclass
 class ApiTrace:
     feature: str
@@ -554,13 +542,16 @@ def _render_html(traces: list[ApiTrace]) -> str:
 
     def decode_headers(b64: str | None) -> str:
         if not b64:
+           return ""
+        try:
+            decoded = base64.b64decode(b64).decode("utf-8")
+        except Exception:
             return ""
         try:
-            raw = base64.b64decode(b64).decode("utf-8")
-            return json.dumps(json.loads(raw), indent=2)
+            return json.dumps(json.loads(decoded), indent=2, ensure_ascii=False)
         except Exception:
-            # fallback to raw text if it wasn't JSON
-            return raw
+            return decoded
+
 
     def json_pre(obj) -> str:
         return esc(json.dumps(obj or {}, indent=2))
@@ -654,23 +645,32 @@ def _render_html(traces: list[ApiTrace]) -> str:
 </body></html>"""
 
 @pytest.fixture(scope="session")
-def api_trace_store():
-    """Session-scoped store per worker. Writes per-worker files to avoid clobbering."""
+def api_trace_store(request):
     data: list[ApiTrace] = []
-    yield data  # tests run here
+    yield data
 
-    # session teardown → write artifacts (per worker)
-    worker = os.getenv("PYTEST_XDIST_WORKER") or "main"   # e.g. gw0, gw1 …
-    out = Path("reports")
-    out.mkdir(parents=True, exist_ok=True)
+    worker = os.getenv("PYTEST_XDIST_WORKER") or "main"
+    workers_dir = Path("reports") / "workers"
+    workers_dir.mkdir(parents=True, exist_ok=True)
 
-    # JSON
-    with open(out / f"api-report-{worker}.json", "w", encoding="utf-8") as f:
-        json.dump([asdict(t) for t in data], f, indent=2)
+    # Always write per-worker JSON (intermediate for aggregator)
+    (workers_dir / f"{worker}.json").write_text(
+        json.dumps([asdict(t) for t in data], indent=2), encoding="utf-8"
+    )
 
-    # HTML
-    html = _render_html(data)
-    (out / f"api-report-{worker}.html").write_text(html, encoding="utf-8")
+    # Optional: per-worker HTML for debugging
+    if request.config.getoption("--api-worker-html"):
+        html = _render_html(data)  # list[ApiTrace]
+        (workers_dir / f"{worker}.html").write_text(html, encoding="utf-8")
+
+@pytest.fixture(autouse=True)
+def debug_fixtures(api_trace_add, api_recorder):
+    print(f"[DEBUG] In debug_fixtures:")
+    print(f"  api_trace_add: {type(api_trace_add)} = {api_trace_add}")
+    print(f"  api_recorder: {type(api_recorder)}")
+    print(f"  api_recorder._add_trace: {api_recorder._add_trace}")
+    yield
+
 
 @pytest.fixture
 def api_trace_add(api_trace_store, request):
@@ -704,34 +704,44 @@ def api_trace_add(api_trace_store, request):
 
 @pytest.fixture
 def api_recorder(api_trace_add, browser):
+    print(f"\n[DEBUG] Creating api_recorder:")
+    print(f"  api_trace_add: {api_trace_add}")
+    print(f"  api_trace_add type: {type(api_trace_add)}")
+    print(f"  browser: {browser}")
+    
+    if api_trace_add is None:
+        raise ValueError("CRITICAL: api_trace_add is None - fixture dependency failed!")
+    
     DEBUG = os.getenv("API_REC_DEBUG", "").lower() in ("1", "true", "yes")
-    # usage: API_REC_DEBUG=1 pytest -m authentication -s
     if DEBUG:
         print("[dbg] ApiRecorder module:", ApiRecorder.__module__)
         print("[dbg] ApiRecorder file:", inspect.getsourcefile(ApiRecorder))
         print("[dbg] has record/close:", hasattr(ApiRecorder, "record"), hasattr(ApiRecorder, "close"))
+    
     r = ApiRecorder(api_trace_add, browser, make_png=True)
+    print(f"[DEBUG] Created ApiRecorder, _add_trace: {r._add_trace}")
+    
     try:
         yield r
     finally:
         r.close()
 
-
 @pytest.fixture
-def api_executor(pw_api, rq, settings, api_recorder):
-    return make_api_executor(pw_api=pw_api, rq_session=rq, settings=settings, recorder=api_recorder)
-
-@pytest.fixture
-def auth_api(api_executor):
-    return AuthAPI(api_executor, base_path="/auth")
+def api_executor(api, rq, settings, api_recorder):
+    """
+    Core API execution engine that can route between different clients.
+    Uses the 'api' fixture (pure API client) as the default Playwright client.
+    """
+    return make_api_executor(pw_api=api, rq_session=rq, settings=settings, recorder=api_recorder)
 
 # --- Post-session aggregator: merge per-worker API traces into one JSON/HTML ---
-
+# --- aggregator helpers ---
 def _is_worker(config) -> bool:
-    return hasattr(config, "workerinput")
+    return hasattr(config, "workerinput")  # True on xdist workers, False on controller/single run
 
 def _gather_worker_reports(root: Path) -> list[dict]:
-    files = sorted(root.glob("api-report-*.json"))  # e.g. api-report-gw0.json, api-report-main.json
+    workers = root / "workers"
+    files = sorted(workers.glob("*.json"))
     merged: list[dict] = []
     for fp in files:
         try:
@@ -761,11 +771,28 @@ def _dedupe(items: list[dict]) -> list[dict]:
         out.append(obj)
     return out
 
+def _rehydrate(obj: dict) -> ApiTrace:
+    return ApiTrace(
+        feature=obj.get("feature", "Unknown Feature"),
+        scenario=obj.get("scenario", "Unknown Scenario"),
+        step=obj.get("step", ""),
+        method=obj.get("method", ""),
+        url=obj.get("url", ""),
+        status=obj.get("status"),
+        request_headers_b64=obj.get("request_headers_b64"),
+        request_json=obj.get("request_json"),
+        response_headers_b64=obj.get("response_headers_b64"),
+        response_json=obj.get("response_json"),
+        request_png_b64=obj.get("request_png_b64"),
+        response_png_b64=obj.get("response_png_b64"),
+        at=obj.get("at", ""),
+    )
+
+# --- run once on controller to write the single combined report ---
 def pytest_sessionfinish(session, exitstatus):
-    """Run once on the controller after all workers finish; create combined report."""
     config = session.config
     if _is_worker(config):
-        return  # workers do nothing
+        return  # workers only write their own JSON
 
     reports_dir = Path("reports")
     merged = _gather_worker_reports(reports_dir)
@@ -775,13 +802,20 @@ def pytest_sessionfinish(session, exitstatus):
     merged = _dedupe(merged)
     merged.sort(key=lambda x: (x.get("feature", ""), x.get("scenario", ""), x.get("at", "")))
 
-    # Write combined JSON
+    # Combined JSON
     (reports_dir / "api-report.json").write_text(json.dumps(merged, indent=2), encoding="utf-8")
 
-    # Write combined HTML using your existing renderer
-    try:
-        html = _render_html(merged)  # uses the same function you already have
-        (reports_dir / "api-report.html").write_text(html, encoding="utf-8")
-        print("[api-report] wrote reports/api-report.json and reports/api-report.html")
-    except Exception as e:
-        print(f"[api-report] couldn't render HTML: {e}")
+    # Combined HTML (renderer expects ApiTrace objects)
+    traces = [_rehydrate(x) for x in merged]
+    html = _render_html(traces)
+    (reports_dir / "api-report.html").write_text(html, encoding="utf-8")
+    print("[api-report] wrote reports/api-report.json and reports/api-report.html")
+
+    # cleanup of per-worker intermediates
+    if config.getoption("--api-clean-workers"):
+        workers_dir = reports_dir / "workers"
+        for fp in workers_dir.glob("*"):
+            try:
+                fp.unlink()
+            except Exception:
+                pass

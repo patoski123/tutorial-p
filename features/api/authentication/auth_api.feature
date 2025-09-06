@@ -14,10 +14,10 @@ Feature: User Authentication API
     When I send a login request
     Then I have a valid API authentication token
   
-  @smoke @api @authentication
-  Scenario: Successful login with another valid credential Pete
-    Given I have a valid username "testuser@example.com"
-    And I have a valid password "testpassword"
-    When I send a login request
-    Then I have a valid API authentication token
+  # @smoke @api @authentication
+  # Scenario: Successful login with another valid credential Pete
+  #   Given I have a valid username "testuser@example.com"
+  #   And I have a valid password "testpassword"
+  #   When I send a login request
+  #   Then I have a valid API authentication token
   
