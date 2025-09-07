@@ -7,7 +7,7 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Given Steps
-@given("I have launched the mobile app")
+@given("I have launched the mobile application")
 def app_launched(mobile_driver):
     # App should be launched automatically by fixture
     # Wait for app to load
