@@ -15,29 +15,29 @@ def app_launched(mobile_driver):
         EC.presence_of_element_located((AppiumBy.ID, "com.example.app:id/main_layout"))
     )
 
-@given("I am on the home screen")
+@given("I am on the app home screen")
 def navigate_to_home_screen(mobile_driver):
     home_button = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/home_tab")
     home_button.click()
 
 # When Steps
-@when("I tap on the profile icon")
+@when("I tap on the profile icons")
 def tap_profile_icon(mobile_driver):
     profile_icon = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/profile_icon")
     profile_icon.click()
 
-@when("I tap on the search icon")
+@when("I tap on the search icons")
 def tap_search_icon(mobile_driver):
     search_icon = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/search_icon")
     search_icon.click()
 
-@when(parsers.parse('I enter "{text}" in the search field'))
+@when(parsers.parse('I enter "{text}" in the search fields'))
 def enter_search_text(mobile_driver, text: str):
     search_field = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/search_input")
     search_field.clear()
     search_field.send_keys(text)
 
-@when("I tap the search buttons")
+@when("I tap the search button")
 def tap_search_button(mobile_driver):
     search_button = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/search_button")
     search_button.click()
