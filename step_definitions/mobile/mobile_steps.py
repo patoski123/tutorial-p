@@ -37,7 +37,7 @@ def enter_search_text(mobile_driver, text: str):
     search_field.clear()
     search_field.send_keys(text)
 
-@when("I tap the search button")
+@when("I tap search button")
 def tap_search_button(mobile_driver):
     search_button = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/search_button")
     search_button.click()
