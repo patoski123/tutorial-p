@@ -37,33 +37,33 @@ def enter_search_text(mobile_driver, text: str):
     search_field.clear()
     search_field.send_keys(text)
 
-@when("I tap the search button")
+@when("I tap the search buttons")
 def tap_search_button(mobile_driver):
     search_button = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/search_button")
     search_button.click()
 
 # Then Steps
-@then("I should see the profile screen")
+@then("I should see the profile screens")
 def verify_profile_screen(mobile_driver):
     profile_screen = WebDriverWait(mobile_driver, 10).until(
         EC.presence_of_element_located((AppiumBy.ID, "com.example.app:id/profile_screen"))
     )
     assert profile_screen.is_displayed()
 
-@then("the profile information should be displayed")
+@then("the profile informations should be displayed")
 def verify_profile_information(mobile_driver):
     profile_name = mobile_driver.find_element(AppiumBy.ID, "com.example.app:id/profile_name")
     assert profile_name.is_displayed()
     assert profile_name.text != ""
 
-@then("I should see search results")
+@then("I should see search result")
 def verify_search_results(mobile_driver):
     results_list = WebDriverWait(mobile_driver, 10).until(
         EC.presence_of_element_located((AppiumBy.ID, "com.example.app:id/search_results"))
     )
     assert results_list.is_displayed()
 
-@then(parsers.parse('the results should contain "{expected_text}"'))
+@then(parsers.parse('the result should contain "{expected_text}"'))
 def verify_search_results_contain_text(mobile_driver, expected_text: str):
     results = mobile_driver.find_elements(AppiumBy.CLASS_NAME, "android.widget.TextView")
     result_texts = [result.text for result in results]
