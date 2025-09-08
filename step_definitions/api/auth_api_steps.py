@@ -14,10 +14,10 @@ except Exception:
     allure = None  # degrade gracefully
 
 # Domain-specific fixture - keeps auth logic with auth steps
-@pytest.fixture
-def auth_api(api_executor):
-    """Auth API client for authentication-related operations."""
-    return AuthAPI(api_executor, base_path="/auth")
+# @pytest.fixture
+# def auth_api(api_executor):
+#     """Auth API client for authentication-related operations."""
+#     return AuthAPI(api_executor, base_path="/auth")
 
 # Shared per-scenario context
 @pytest.fixture
@@ -52,13 +52,20 @@ def have_password(ctx, password: str):
     ctx["password"] = password
 
 @when("I send a login request")
-def send_login_request(ctx, auth_api, api): 
-    """
-    'api' comes from your conftest - it's the pure API client (no browser state).
-    """
-    print(f"{ctx['username']}: {ctx['password']}")
+# def send_login_request(ctx, auth_api, api): 
+def send_login_request(ctx, api_executor): 
+    # status, data = auth_api.login(ctx, ctx["username"], ctx["password"])
+    # ctx["resp_status"], ctx["resp_json"], ctx["token"] = status, data, 
+    # ctx["resp_status"], ctx["resp_json"], ctx["token"] = status, data, 
+    # data.get("access_token")
+
+    auth_api = AuthAPI(api_executor)
     status, data = auth_api.login(ctx, ctx["username"], ctx["password"])
-    ctx["resp_status"], ctx["resp_json"], ctx["token"] = status, data, data.get("access_token")
+    ctx["resp_status"], ctx["resp_json"] = status, data,
+    if isinstance(data, dict):
+        ctx["token"] = data.get("access_token") if isinstance(data, dict) else None
+    if status != 200:
+        print(f"Login failed with status {status}: {data}")
 
 @then("I have a valid API authentication token")
 def have_valid_api_token(ctx):
@@ -66,6 +73,10 @@ def have_valid_api_token(ctx):
     token = (ctx.get("resp_json") or {}).get("access_token")
     assert token and isinstance(token, str) and token.strip(), f"No token in response: {ctx.get('resp_json')}"
 
+@then(parsers.parse("the response status should be {expected_status:d}"))
+def assert_response_status(ctx, expected_status, api_executor):
+    actual_status = ctx.get("resp_status")
+    assert actual_status == expected_status, f"Expected {expected_status} but got {actual_status}"
 
 # If you have E2E scenarios that need shared browser state, add alternative steps:
 @when("I send a login request with shared browser state")

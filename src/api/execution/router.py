@@ -20,7 +20,7 @@ def select_mode(ctx: Dict[str, Any]) -> str:
 
 def mock_call(method: str, path: str, body: Optional[Dict[str, Any]], settings) -> Tuple[int, Dict[str, Any]]:
     # Example stub: auth
-    if path == "/auth/login" and method.upper() == "POST":
+    if path == "/login" and method.upper() == "POST":
         ok = (
             body
             and body.get("username") == settings.test_username

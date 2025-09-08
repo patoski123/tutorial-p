@@ -33,3 +33,26 @@ class BaseAPI:
             req_json=req_json,
             req_headers=headers,
         )
+    
+    def get(self, ctx: dict, step: str, endpoint: str, 
+            req_headers: Dict[str, str] | None = None) -> Tuple[int, Dict[str, Any]]:
+        return self._call(ctx, step, "GET", endpoint, req_headers=req_headers)
+    
+    def post(self, ctx: dict, step: str, endpoint: str,
+             req_json: Dict[str, Any] | None = None,
+             req_headers: Dict[str, str] | None = None) -> Tuple[int, Dict[str, Any]]:
+        return self._call(ctx, step, "POST", endpoint, req_json, req_headers)
+    
+    def put(self, ctx: dict, step: str, endpoint: str,
+            req_json: Dict[str, Any] | None = None,
+            req_headers: Dict[str, str] | None = None) -> Tuple[int, Dict[str, Any]]:
+        return self._call(ctx, step, "PUT", endpoint, req_json, req_headers)
+    
+    def delete(self, ctx: dict, step: str, endpoint: str,
+               req_headers: Dict[str, str] | None = None) -> Tuple[int, Dict[str, Any]]:
+        return self._call(ctx, step, "DELETE", endpoint, req_headers=req_headers)
+    
+    def patch(self, ctx: dict, step: str, endpoint: str,
+              req_json: Dict[str, Any] | None = None,
+              req_headers: Dict[str, str] | None = None) -> Tuple[int, Dict[str, Any]]:
+        return self._call(ctx, step, "PATCH", endpoint, req_json, req_headers)

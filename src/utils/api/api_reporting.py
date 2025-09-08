@@ -1,4 +1,4 @@
-# utils/api/api_reporting.py
+#  utils/api/api_reporting.py
 
 from __future__ import annotations
 from typing import Any, Dict, Optional
@@ -51,7 +51,6 @@ class ApiRecorder:
         if self._attach_mode not in {"json", "png", "both", "none"}:
             self._attach_mode = "json"
 
-        # Only render PNGs if asked (either make_png=True for report or allure wants png)
         self._make_png = bool(make_png or self._attach_mode in {"png", "both"})
 
     def _ensure_ctx(self):
@@ -80,7 +79,7 @@ class ApiRecorder:
             page.set_content(html_doc)  # waits for 'load' by default
             return page.screenshot(full_page=True)
         except Exception:
-            # Don’t fail the test for a reporting glitch
+            # Don't fail the test for a reporting glitch
             return None
         finally:
             try:
@@ -100,9 +99,27 @@ class ApiRecorder:
         resp_headers: Optional[Dict[str, Any]] = None,
         resp_json: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # Generate PNGs only if enabled
-        req_png_b = self._json_to_png(req_json or {}, "Request JSON") if self._make_png else None
-        resp_png_b = self._json_to_png(resp_json or {}, "Response JSON") if self._make_png else None
+        # Enhancement #1: Include URL context in attachments
+        
+        # Create enhanced request context with URL
+        req_context = {
+            "method": method.upper(),
+            "url": url,
+            "headers": req_headers or {},
+            "body": req_json or {}
+        }
+        
+        # Create enhanced response context with URL  
+        resp_context = {
+            "url": url,
+            "status": status,
+            "headers": resp_headers or {},
+            "body": resp_json or {}
+        }
+
+        # Generate PNGs only if enabled (now with URL context)
+        req_png_b = self._json_to_png(req_context, f"Request: {method.upper()} {url}") if self._make_png else None
+        resp_png_b = self._json_to_png(resp_context, f"Response: {status} {url}") if self._make_png else None
 
         # 1) Feed your unified trace (strings for PNGs; headers/json forwarded as dicts)
         self._add_trace(
@@ -110,21 +127,30 @@ class ApiRecorder:
             method=method,
             url=url,
             status=status,
-            req_headers=req_headers,
             req_json=req_json,
-            resp_headers=resp_headers,
             resp_json=resp_json,
             req_png_b64=(base64.b64encode(req_png_b).decode("ascii") if req_png_b else None),
             resp_png_b64=(base64.b64encode(resp_png_b).decode("ascii") if resp_png_b else None),
         )
 
-        # 2) Allure attachments (according to mode)
+        # 2) Enhanced Allure attachments with URL context
         if allure and self._attach_mode != "none":
             if self._attach_mode in {"json", "both"}:
-                if req_json is not None:
-                    allure.attach(_safe_json_text(req_json), f"{step} - request.json", allure.attachment_type.JSON)
-                if resp_json is not None:
-                    allure.attach(_safe_json_text(resp_json), f"{step} - response.json", allure.attachment_type.JSON)
+                # Enhancement #1: Attach request context (includes URL)
+                if req_json is not None or req_headers:
+                    allure.attach(
+                        _safe_json_text(req_context), 
+                        f"{step} - request.json", 
+                        allure.attachment_type.JSON
+                    )
+                
+                # Enhancement #1: Attach response context (includes URL)
+                if resp_json is not None or status:
+                    allure.attach(
+                        _safe_json_text(resp_context), 
+                        f"{step} - response.json", 
+                        allure.attachment_type.JSON
+                    )
 
             if self._attach_mode in {"png", "both"}:
                 # Only attach if we actually rendered them

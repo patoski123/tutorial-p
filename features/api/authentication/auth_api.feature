@@ -13,6 +13,7 @@ Feature: User Authentication API
     And I have a valid password "testpassword"
     When I send a login request
     Then I have a valid API authentication token
+    And the response status should be 200
   
   # @smoke @api @authentication
   # Scenario: Successful login with another valid credential Pete

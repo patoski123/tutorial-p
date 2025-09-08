@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Generator, Dict, Any, Optional, Callable, List, Set
 import pytest
 from playwright.sync_api import (Playwright, BrowserType, Browser, BrowserContext, Page, APIRequestContext)
+import allure
+from src.config.settings import get_settings, Settings
 
 # Appium imports can be optional if not always installed
 try:
@@ -58,12 +60,163 @@ def pytest_addoption(parser):
     parser.addoption("--api-clean-workers", action="store_true", default=False, help="Delete reports/workers/* after combining")
 
 # --- Settings / environment ---
-@pytest.fixture(scope="session")
-def settings(request) -> Settings:
-    """Load settings from .env files based on --env option."""
+# @pytest.fixture(scope="session")
+# def settings(request) -> Settings:
+#     """Load settings from .env files based on --env option."""
+#     env = request.config.getoption("--env")
+#     os.environ["TEST_ENV"] = env
+#     # return Settings(environment=env)
+#     return get_settings()
+# conftest.py
+import os
+import json
+from pathlib import Path
+
+import pytest
+import allure
+
+from src.config.settings import get_settings, Settings
+
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+def _xdist_is_master(config) -> bool:
+    """True in the master (non-worker) pytest process."""
+    return not hasattr(config, "workerinput")
+
+def _xdist_worker_id() -> str:
+    """Returns 'gw0', 'gw1', ... or 'master' when xdist not active."""
+    return os.environ.get("PYTEST_XDIST_WORKER", "master")
+
+def _resolve_xdist_workers(config) -> int:
+    """
+    Read the actual worker count from pytest-xdist.
+    - If not running with -n, return 1.
+    - If -n auto, return os.cpu_count() or 1.
+    - If -n N, return N.
+    """
+    try:
+        n = config.getoption("numprocesses")  # None/0/False/"auto"/int
+    except Exception:
+        return 1
+
+    if not n:
+        return 1
+
+    if isinstance(n, str):
+        if n.lower() == "auto":
+            return os.cpu_count() or 1
+        try:
+            return int(n)
+        except ValueError:
+            return 1
+
+    try:
+        return int(n)
+    except Exception:
+        return 1
+
+# ---------------------------
+# Session bootstrap (NO allure.attach here)
+# - Sets TEST_ENV
+# - Builds settings singleton
+# - Writes environment.properties with true XDIST_WORKERS only
+# ---------------------------
+@pytest.fixture(scope="session", autouse=True)
+def session_context(request) -> Settings:
+    # 1) unify env early
     env = request.config.getoption("--env")
     os.environ["TEST_ENV"] = env
-    return Settings(environment=env)
+
+    # 2) build the singleton (loads .env, json configs, validates, etc.)
+    settings = get_settings()
+
+    # 3) resolve allure results dir SAME as pytest/allure uses
+    try:
+        results_dir_opt = request.config.getoption("--alluredir")
+    except Exception:
+        results_dir_opt = None
+    results_dir = Path(results_dir_opt or os.getenv("ALLURE_RESULTS_DIR") or "allure-results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4) only master/gw0 writes shared artifacts to avoid races
+    is_master = _xdist_is_master(request.config)
+    is_primary = is_master or _xdist_worker_id() == "gw0"
+
+    if is_primary:
+        actual_workers = _resolve_xdist_workers(request.config)
+
+        # Write Allure environment.properties (what shows in Allure's Environment tab)
+        env_props = results_dir / "environment.properties"
+        with env_props.open("w", encoding="utf-8") as f:
+            f.write(f"TEST_ENV={settings.environment}\n")
+            f.write(f"BASE_URL={settings.base_url}\n")
+            f.write(f"API_BASE_URL={settings.api_base_url}\n")
+            f.write(f"TIMEOUT={settings.timeout}\n")
+            # Only the REAL runtime worker count:
+            f.write(f"XDIST_WORKERS={actual_workers}\n")
+            f.write(f"RUN_SMOKE_ONLY={settings.should_run_smoke_only()}\n")
+
+    return settings
+
+
+# Keep a thin fixture so tests can still request `settings`
+@pytest.fixture(scope="session")
+def settings(session_context) -> Settings:
+    return session_context
+
+
+# ---------------------------
+# Attach session-level JSON once (safe place with Allure parent)
+# ---------------------------
+@pytest.fixture(autouse=True)
+def attach_config_once_per_session(request, settings):
+    """
+    Attach config/context JSON to Allure at the first test only.
+    Function-scoped (autouse) so Allure has a valid container.
+    """
+    flag = "_config_attached_once"
+    if getattr(request.config, flag, False):
+        return
+
+    # Only attach once across workers (master/gw0)
+    is_master = _xdist_is_master(request.config)
+    is_primary = is_master or _xdist_worker_id() == "gw0"
+
+    if is_primary:
+        try:
+            allure.attach(
+                json.dumps(settings.get_config_summary(), indent=2),
+                name="Configuration Summary",
+                attachment_type=allure.attachment_type.JSON,
+            )
+        except Exception:
+            pass
+
+        # Optional: URL reachability (enable with VALIDATE_URLS=1|true|yes in your Settings method)
+        try:
+            url_check = settings.validate_urls_accessible()
+            if isinstance(url_check, dict) and url_check.get("enabled"):
+                allure.attach(
+                    json.dumps(url_check, indent=2),
+                    name="URL Reachability",
+                    attachment_type=allure.attachment_type.JSON,
+                )
+        except Exception:
+            pass
+
+    setattr(request.config, flag, True)
+
+
+# ---------------------------
+# DO NOT attach from this hook (no Allure parent here)
+# ---------------------------
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session):
+    # PLease do not delete, Keep for non-Allure early setup if needed; do NOT call allure.attach here.
+    pass
 
 # -------------------------
 # Browser / Context / Page
@@ -382,6 +535,7 @@ def _is_page_capturable(page) -> bool:
         logger.debug(f"Page state check failed: {e}")
         return False
 
+
 def _try_capture_page_screenshot(request) -> Optional[bytes]:
     """
     Dynamically discover and capture screenshot from any available Playwright page fixture.
@@ -389,13 +543,35 @@ def _try_capture_page_screenshot(request) -> Optional[bytes]:
     available_fixtures = _get_available_fixtures(request)
     page_candidates = _filter_page_fixtures(available_fixtures)
     
+    # If no page fixtures are available, skip silently (likely API-only test)
+    if not page_candidates:
+        return None
+    
+    # Check if any page candidates are actually instantiated and usable
+    usable_pages = []
     for fixture_name in page_candidates:
+        try:
+            # Check if the fixture exists and is accessible
+            if hasattr(request, '_fixturemanager'):
+                fixture_def = request._fixturemanager._arg2fixturedefs.get(fixture_name)
+                if fixture_def and any(fd.cached_result for fd in fixture_def):
+                    usable_pages.append(fixture_name)
+        except (AttributeError, KeyError):
+            continue
+    
+    # If no usable pages found, skip without warning
+    if not usable_pages:
+        return None
+    
+    # Existing screenshot logic (unchanged)
+    for fixture_name in usable_pages:
         screenshot_bytes = _attempt_screenshot_from_fixture(request, fixture_name)
         if screenshot_bytes:
             logger.debug(f"Screenshot captured using fixture: {fixture_name}")
             return screenshot_bytes
     
-    logger.warning("No valid Playwright page fixture found for screenshot capture")
+    # Only log warning if we had page fixtures but couldn't capture
+    logger.warning(f"Page fixtures available ({usable_pages}) but screenshot capture failed")
     return None
 
 # --- Mobile fallback screenshot helper ---
@@ -416,7 +592,6 @@ def _try_capture_mobile_screenshot(request) -> Optional[bytes]:
             return screenshot_bytes
     
     return None
-        
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
@@ -426,8 +601,15 @@ def pytest_runtest_makereport(item, call):
     if report.when != "call" or not report.failed:
         return
 
-    # UI/Mobile screenshot: UI first, then mobile
-    png = _try_capture_page_screenshot(item._request) or _try_capture_mobile_screenshot(item._request)
+    # 1) Try to capture UI/Mobile screenshots
+    png = None
+    try:
+        png = _try_capture_page_screenshot(item._request)
+        if not png:
+            png = _try_capture_mobile_screenshot(item._request)
+    except Exception:
+        pass
+
     if png:
         # pytest-html (if enabled)
         try:
@@ -438,16 +620,22 @@ def pytest_runtest_makereport(item, call):
             pass
         # Allure
         try:
-            import allure
             allure.attach(png, name="failure-screenshot", attachment_type=allure.attachment_type.PNG)
         except Exception:
             pass
 
-    # Re-attach last API JSON (handy if asserts happen after the call)
+    # 2) Optional: log the last API response if your executor supports it
+    try:
+        api_executor = item._request.getfixturevalue("api_executor")
+        if hasattr(api_executor, "log_last_response_on_failure"):
+            api_executor.log_last_response_on_failure()
+    except Exception:
+        pass
+
+    # 3) Re-attach last API request/response JSON if your tests stash them on `item`
     try:
         last = getattr(item, "_api_last", None)
         if last:
-            import allure
             if last.get("req_json") is not None:
                 allure.attach(
                     json.dumps(last["req_json"], indent=2),
@@ -462,6 +650,66 @@ def pytest_runtest_makereport(item, call):
                 )
     except Exception:
         pass
+
+# @pytest.hookimpl(hookwrapper=True)
+# def pytest_runtest_makereport(item, call):
+#     outcome = yield
+#     report = outcome.get_result()
+
+#     if report.when != "call" or not report.failed:
+#         return
+
+#     # UI/Mobile screenshot: UI first, then mobile
+#     png = _try_capture_page_screenshot(item._request) or _try_capture_mobile_screenshot(item._request)
+#     if png:
+#         # pytest-html (if enabled)
+#         try:
+#             import pytest_html
+#             if hasattr(report, "extra"):
+#                 report.extra.append(pytest_html.extras.png(png, mime_type="image/png"))
+#         except Exception:
+#             pass
+#         # Allure
+#         try:
+#             import allure
+#             allure.attach(png, name="failure-screenshot", attachment_type=allure.attachment_type.PNG)
+#         except Exception:
+#             pass
+
+#     # Enhancement #2: Console logging for API failures
+#     # Try to find the api_executor and log last response on failure
+#     api_executor = None
+    
+#     # Try to get the api_executor fixture
+#     if hasattr(item, '_request'):
+#         try:
+#             api_executor = item._request.getfixturevalue('api_executor')
+#         except Exception:
+#             pass
+    
+#     # Log the last API response on failure
+#     if api_executor and hasattr(api_executor, 'log_last_response_on_failure'):
+#         api_executor.log_last_response_on_failure()
+
+    # # Re-attach last API JSON (handy if asserts happen after the call)
+    # try:
+    #     last = getattr(item, "_api_last", None)
+    #     if last:
+    #         import allure
+    #         if last.get("req_json") is not None:
+    #             allure.attach(
+    #                 json.dumps(last["req_json"], indent=2),
+    #                 name="api-last-request.json",
+    #                 attachment_type=allure.attachment_type.JSON,
+    #             )
+    #         if last.get("resp_json") is not None:
+    #             allure.attach(
+    #                 json.dumps(last["resp_json"], indent=2),
+    #                 name="api-last-response.json",
+    #                 attachment_type=allure.attachment_type.JSON,
+    #             )
+    # except Exception:
+    #     pass
 
 # --- Optional: BDD lifecycle logging (safe, minimal signatures) ---
 def pytest_bdd_before_scenario(request, feature, scenario):
@@ -552,7 +800,6 @@ def _render_html(traces: list[ApiTrace]) -> str:
         except Exception:
             return decoded
 
-
     def json_pre(obj) -> str:
         return esc(json.dumps(obj or {}, indent=2))
 
@@ -563,9 +810,6 @@ def _render_html(traces: list[ApiTrace]) -> str:
 
     rows = []
     for i, t in enumerate(traces, 1):
-        req_headers_text = decode_headers(t.request_headers_b64)
-        resp_headers_text = decode_headers(t.response_headers_b64)
-
         # Request block: prefer PNG, fallback to JSON text
         if t.request_png_b64:
             req_block = f'''
@@ -607,11 +851,9 @@ def _render_html(traces: list[ApiTrace]) -> str:
               <code>{esc(t.url)}</code>
               → <span class="status">{t.status if t.status is not None else "-"}</span>
             </div>
-            <details><summary>Request headers</summary><pre>{esc(req_headers_text)}</pre></details>
             {req_block}
           </div>
           <div class="resp">
-            <details><summary>Response headers</summary><pre>{esc(resp_headers_text)}</pre></details>
             {resp_block}
           </div>
         </section>
@@ -644,6 +886,7 @@ def _render_html(traces: list[ApiTrace]) -> str:
 {''.join(rows) if rows else "<p>No API calls captured.</p>"}
 </body></html>"""
 
+
 @pytest.fixture(scope="session")
 def api_trace_store(request):
     data: list[ApiTrace] = []
@@ -662,15 +905,6 @@ def api_trace_store(request):
     if request.config.getoption("--api-worker-html"):
         html = _render_html(data)  # list[ApiTrace]
         (workers_dir / f"{worker}.html").write_text(html, encoding="utf-8")
-
-@pytest.fixture(autouse=True)
-def debug_fixtures(api_trace_add, api_recorder):
-    print(f"[DEBUG] In debug_fixtures:")
-    print(f"  api_trace_add: {type(api_trace_add)} = {api_trace_add}")
-    print(f"  api_recorder: {type(api_recorder)}")
-    print(f"  api_recorder._add_trace: {api_recorder._add_trace}")
-    yield
-
 
 @pytest.fixture
 def api_trace_add(api_trace_store, request):
@@ -704,9 +938,6 @@ def api_trace_add(api_trace_store, request):
 
 @pytest.fixture
 def api_recorder(api_trace_add, browser):
-    print(f"\n[DEBUG] Creating api_recorder:")
-    print(f"  api_trace_add: {api_trace_add}")
-    print(f"  api_trace_add type: {type(api_trace_add)}")
     print(f"  browser: {browser}")
     
     if api_trace_add is None:
