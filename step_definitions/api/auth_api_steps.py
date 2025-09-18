@@ -88,3 +88,13 @@ def send_login_request_shared(ctx, auth_api, api_shared, page):
     shared_api = api_shared()
     status, data = auth_api.login(ctx, ctx["username"], ctx["password"], api_client=shared_api)
     ctx["resp_status"], ctx["resp_json"], ctx["token"] = status, data, data.get("access_token")
+
+@when('I get list instance with retry')
+def get_list_instance_with_retry(ctx, api_executor):
+    auth_api = AuthAPI(api_executor)
+    endpoint = ctx['endpoint']  # Get endpoint from previous step
+    status, data = auth_api.get_list_instance_with_retry(
+        ctx, "testuser", "testpass", endpoint, max_attempts=5
+    )
+    ctx['status'] = status
+    ctx['response'] = data

@@ -282,6 +282,15 @@ allure serve reports/allure-results     # requires Allure CLI
 # Unified API trace (HTML):
 open reports/api-report.html
 
+# Stop any running allure servers
+pkill -f allure
+
+# Clean regenerate the report
+allure generate reports/allure-results --clean -o reports/allure-report
+
+# Serve the fresh report
+allure serve reports/allure-results
+
 System Chrome:
 pytest -m authentication --browser=chromium --browser-channel=chrome
 
@@ -289,3 +298,10 @@ Specific binary:
 pytest -m authentication --browser=chromium --browser-path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 pip install --upgrade pytest-bdd gherkin-official
+
+# Disable redaction
+REDACT_SENSITIVE_DATA=false pytest
+
+# settings.redact_uuid_values = True, or
+
+# env var: REDACT_UUIDS=true.

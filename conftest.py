@@ -6,11 +6,12 @@ import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import json, base64
-from pathlib import Path
 from typing import Generator, Dict, Any, Optional, Callable, List, Set
 import pytest
 from playwright.sync_api import (Playwright, BrowserType, Browser, BrowserContext, Page, APIRequestContext)
 import allure
+import sqlite3
+from contextlib import contextmanager
 from src.config.settings import get_settings, Settings
 
 # Appium imports can be optional if not always installed
@@ -23,7 +24,6 @@ except Exception:
     UiAutomator2Options = None
     XCUITestOptions = None
 
-from src.config.settings import Settings
 from src.utils.logger import get_logger
 from src.utils.api.api_reporting import ApiRecorder
 from src.api.execution.executor import make_api_executor
@@ -50,6 +50,202 @@ def _discover_step_modules():
 
 pytest_plugins = _discover_step_modules()
 
+# -------------------------
+# Robust SQLite Test Data Store (xdist-safe)
+# -------------------------
+
+class KVStore:
+    """
+    A simple, robust key-value store backed by SQLite (JSON values).
+    - Safe across processes/workers (pytest-xdist).
+    - Transactions prevent lost updates.
+    - JSON-serializable values only.
+    """
+
+    def __init__(self, db_path: Path, namespace: str = "default") -> None:
+        self.db_path = Path(db_path)
+        self.namespace = namespace
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        """
+        Open a connection with safe defaults.
+        - timeout: wait for locks instead of failing immediately.
+        - isolation_level=None: autocommit; we explicitly BEGIN/COMMIT inside _tx().
+        - check_same_thread=False: allows usage within thread pools (if any).
+        """
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=30,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        # --- Safety / security leaning PRAGMAs ---
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA secure_delete=ON;")   # overwrite freed pages
+        conn.execute("PRAGMA temp_store=MEMORY;")  # avoid temp files on disk
+
+        # --- Concurrency mode ---
+        # If you want fewer sidecar files and max durability, disable WAL:
+        #   TESTDATA_DISABLE_WAL=1 pytest -n auto
+        if os.environ.get("TESTDATA_DISABLE_WAL"):
+            conn.execute("PRAGMA journal_mode=TRUNCATE;")
+            conn.execute("PRAGMA synchronous=FULL;")  # safer vs power loss
+        else:
+            conn.execute("PRAGMA journal_mode=WAL;")   # better concurrency
+            conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
+    def _init_db(self) -> None:
+        """
+        Ensure directory + table exist and set restrictive file permissions.
+        """
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # If file exists, restrict; if not, create then restrict.
+        try:
+            if self.db_path.exists():
+                os.chmod(self.db_path, 0o600)  # rw-------
+        except Exception:
+            pass
+
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS kv (
+                    namespace  TEXT NOT NULL,
+                    k          TEXT NOT NULL,
+                    v          TEXT NOT NULL,           -- JSON text
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (namespace, k)
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_kv_ns ON kv(namespace);")
+
+        try:
+            os.chmod(self.db_path, 0o600)
+        except Exception:
+            pass
+
+    @contextmanager
+    def _tx(self):
+        """
+        Transaction wrapper.
+        - BEGIN IMMEDIATE takes a reserved lock (prevents write races).
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+            yield conn
+            conn.execute("COMMIT;")
+        except Exception:
+            conn.execute("ROLLBACK;")
+            raise
+        finally:
+            conn.close()
+
+    # --- JSON helpers ---
+    def _enc(self, value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False)
+
+    def _dec(self, s: Optional[str]) -> Any:
+        return None if s is None else json.loads(s)
+
+    # --- Public API ---
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Read a value by key, returning default if missing.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT v FROM kv WHERE namespace=? AND k=?",
+                (self.namespace, key),
+            ).fetchone()
+            return self._dec(row[0]) if row else default
+
+    def set(self, key: str, value: Any) -> None:
+        try:
+            payload = self._enc(value)
+        except TypeError as e:
+            raise TypeError(f"KVStore.set('{key}') value is not JSON-serializable") from e
+        with self._tx() as conn:
+            conn.execute(
+                """INSERT INTO kv(namespace, k, v, updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(namespace, k)
+                DO UPDATE SET v=excluded.v, updated_at=CURRENT_TIMESTAMP""",
+                (self.namespace, key, payload),
+            )
+    
+    def delete(self, key: str) -> None:
+        """
+        Delete a key.
+        """
+        with self._tx() as conn:
+            conn.execute(
+                "DELETE FROM kv WHERE namespace=? AND k=?",
+                (self.namespace, key),
+            )
+
+    def update(self, key: str, fn: Callable[[Any], Any], default: Any = None) -> Any:
+        """
+        Atomic read-modify-write using a user function.
+        Creates the key with 'default' if missing.
+        """
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT v FROM kv WHERE namespace=? AND k=?",
+                (self.namespace, key),
+            ).fetchone()
+            current = self._dec(row[0]) if row else default
+            new_val = fn(current)
+            if row:
+                conn.execute(
+                    "UPDATE kv SET v=?, updated_at=CURRENT_TIMESTAMP WHERE namespace=? AND k=?",
+                    (self._enc(new_val), self.namespace, key),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO kv(namespace, k, v, updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                    (self.namespace, key, self._enc(new_val)),
+                )
+            return new_val
+        
+    def get_or_create(self, key: str, factory: Callable[[], Any]) -> Any:
+        """
+        Get a value if it exists; otherwise create it with `factory()` and store it.
+        """
+        with self._tx() as conn:
+            row = conn.execute("SELECT v FROM kv WHERE namespace=? AND k=?",(self.namespace, key),
+        ).fetchone()
+        if row:
+            return self._dec(row[0])
+        
+        # Value missing → create and insert
+        value = factory()
+        conn.execute(
+            "INSERT INTO kv(namespace, k, v, updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)",(self.namespace, key, self._enc(value)),
+        )
+        return value
+    
+    def append_list(self, key: str, item: Any) -> None:
+        """
+        Append an item to a JSON list stored at key (created if absent).
+        """
+        def _app(cur):
+            cur = cur or []
+            if not isinstance(cur, list):
+                raise TypeError(f"Value at '{key}' is not a list")
+            cur.append(item)
+            return cur
+        self.update(key, _app, default=[])
+
+    def namespace_store(self, namespace: str) -> "KVStore":
+        """
+        Create a 'view' into a different logical namespace (same DB file).
+        """
+        return KVStore(self.db_path, namespace=namespace)
+
+
 # --- CLI options ---
 def pytest_addoption(parser):
     parser.addoption("--env", action="store", default="dev", help="Environment to run tests")
@@ -58,25 +254,6 @@ def pytest_addoption(parser):
     parser.addoption("--user-role", action="store", default="user", help="Test user role (e.g. user, admin)")
     parser.addoption("--api-worker-html", action="store_true", default=False, help="Also write per-worker HTML under reports/workers/")
     parser.addoption("--api-clean-workers", action="store_true", default=False, help="Delete reports/workers/* after combining")
-
-# --- Settings / environment ---
-# @pytest.fixture(scope="session")
-# def settings(request) -> Settings:
-#     """Load settings from .env files based on --env option."""
-#     env = request.config.getoption("--env")
-#     os.environ["TEST_ENV"] = env
-#     # return Settings(environment=env)
-#     return get_settings()
-# conftest.py
-import os
-import json
-from pathlib import Path
-
-import pytest
-import allure
-
-from src.config.settings import get_settings, Settings
-
 
 # ---------------------------
 # Helpers
@@ -270,6 +447,69 @@ def page(context: BrowserContext) -> Generator[Page, None, None]:
         yield p
     finally:
         p.close()
+
+# -------------------------
+# Shared run directory + fixtures (xdist-friendly)
+# -------------------------
+
+@pytest.fixture(scope="session")
+def shared_run_dir(tmp_path_factory) -> Path:
+    """
+    Real cross-worker shared dir.
+
+    - Under xdist, each worker has its own basetemp (.../popen-gwX).
+      We go ONE LEVEL UP to their common parent and use a shared folder there.
+    - In serial runs, just create a normal tmp dir.
+    - We wipe the DB only once (gw0 or master).
+    """
+    worker = _xdist_worker_id()
+
+    if worker == "master":
+        base = tmp_path_factory.mktemp("shared-testdata", numbered=False)
+    else:
+        # e.g. .../pytest-of-user/pytest-12345/  (common to all workers)
+        root = tmp_path_factory.getbasetemp().parent
+        base = root / "shared-testdata"
+        base.mkdir(parents=True, exist_ok=True)
+
+    # Clean DB once to start fresh
+    if worker in ("master", "gw0"):
+        for suffix in ("", "-wal", "-shm"):
+            p = base / f"testdata.sqlite3{suffix}"
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
+    return base
+
+@pytest.fixture(scope="session")
+def testdata_store(shared_run_dir: Path) -> KVStore:
+    """
+    Session-scoped, cross-worker shared KV store for this run.
+    Use this when you want multiple tests/workers to see the same keys.
+    """
+    return KVStore(shared_run_dir / "testdata.sqlite3", namespace="default")
+
+@pytest.fixture
+def testdata(testdata_store: KVStore, request) -> KVStore:
+    """
+    Function-scoped namespaced view to avoid key collisions automatically.
+    Each test gets a unique namespace derived from its nodeid.
+    Use this for per-test sharing among steps, or promote to testdata_store if needed.
+    """
+    nodeid = request.node.nodeid  # e.g., tests/e2e/test_login.py::test_flow
+    ns = nodeid.replace("/", "_").replace("::", "__")
+    return testdata_store.namespace_store(ns)
+
+@pytest.fixture
+def ctx() -> dict:
+    """
+    Your existing per-test scratchpad (fast in-memory, not cross-test).
+    """
+    return {}
+
 
 @pytest.fixture
 def shared_page(shared_context: BrowserContext) -> Generator[Page, None, None]:
@@ -1050,3 +1290,39 @@ def pytest_sessionfinish(session, exitstatus):
                 fp.unlink()
             except Exception:
                 pass
+
+
+# -------------------------
+# Optional: cleanup DB files at session end
+# -------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_testdata_db(shared_run_dir: Path):
+    """
+    Delete DB and sidecars after the run (good when storing tokens/secrets).
+    Disable if you want to inspect the DB post-run.
+    """
+    yield
+    for suffix in ("", "-wal", "-shm"):
+        p = shared_run_dir / f"testdata.sqlite3{suffix}"
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
+
+from src.api.wrappers.retry_api import RetryTestAPI
+from src.api.execution.router import reset_retry_attempts
+
+@pytest.fixture
+def retry_api(api_executor):
+    """API wrapper for testing retry functionality"""
+    return RetryTestAPI(api_executor)
+
+@pytest.fixture(autouse=True)
+def reset_retry_state():
+    """Reset retry state before each test"""
+    reset_retry_attempts()
+    yield
+    reset_retry_attempts()  # Also reset after test
